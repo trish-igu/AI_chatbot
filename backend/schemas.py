@@ -10,7 +10,6 @@ from datetime import datetime
 
 class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
-    
     conversation_id: Optional[UUID] = Field(None, description="UUID of existing conversation, or None for new conversation")
     message: str = Field(..., min_length=1, max_length=4000, description="User's message to the AI")
 

@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     azure_openai_endpoint_secret_name: str = "azure-openai-endpoint"
     azure_openai_deployment_name_secret_name: str = "azure-openai-deployment-name"
     
+    # ADD THIS: Configuration for the background service
+    summarization_interval_seconds: int = 300 # Check every 5 minutes by default
+
     # Loaded secrets (will be populated from Secret Manager or environment)
     database_url: Optional[str] = None
     azure_openai_api_key: Optional[str] = None
