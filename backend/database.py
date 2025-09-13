@@ -2,7 +2,7 @@
 SQLAlchemy models and async database session setup for the conversational AI application.
 """
 
-from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, CheckConstraint
+from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, CheckConstraint, Integer
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
@@ -19,8 +19,23 @@ class User(Base):
     __tablename__ = "users"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email = Column(String(255), nullable=True)  # Optional email field
+    email = Column(String(255), nullable=True)  # Email field
+    preferences = Column(JSONB, nullable=True)  # User preferences as JSON
     created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    last_login_at = Column(DateTime(timezone=True), nullable=True)  # Last login timestamp
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())  # Last update timestamp
+    first_name = Column(String(100), nullable=True)  # First name
+    last_name = Column(String(100), nullable=True)  # Last name
+    display_name = Column(String(150), nullable=True)  # Display name
+    avatar = Column(String(500), nullable=True)  # Avatar URL
+    password_hash = Column(String(255), nullable=True)  # Hashed password
+    auth_provider = Column(String(50), nullable=True)  # Authentication provider (email, google, etc.)
+    phone_number = Column(String(20), nullable=True)  # Phone number
+    phone_verified = Column(Boolean, nullable=False, default=False)  # Phone verification status
+    is_caregiver = Column(Boolean, nullable=False, default=False)  # Caregiver status
+    care_receivers_count = Column(Integer, nullable=False, default=0)  # Number of care receivers
+    onboarding_completed = Column(Boolean, nullable=False, default=False)  # Onboarding completion status
+    onboarding_current_step = Column(Integer, nullable=False, default=0)  # Current onboarding step
     
     # Relationship to conversations
     conversations = relationship("ChatbotConversationAudit", back_populates="user")

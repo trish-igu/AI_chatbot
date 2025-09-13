@@ -6,6 +6,7 @@ from sqlalchemy import select, update, desc, func
 
 from database import ChatbotConversationAudit, ChatbotUserMemory, User
 from config import settings
+from auth_utils import get_password_hash, verify_password
 
 async def get_or_create_user(db: AsyncSession, user_id: uuid.UUID, email: str = None) -> User:
     """
@@ -362,4 +363,158 @@ async def get_cumulative_summary_context(
     context_parts.append(f"This is conversation #{len(conversations) + 1} for this user. Use the above context to provide personalized, continuous care.")
     
     return "\n\n".join(context_parts)
+
+
+# Authentication CRUD Operations
+async def create_user(
+    db: AsyncSession, 
+    email: str, 
+    password: str,
+    first_name: str = None,
+    last_name: str = None,
+    display_name: str = None,
+    phone_number: str = None,
+    is_caregiver: bool = False
+) -> User:
+    """
+    Create a new user with hashed password.
+    """
+    # Check if user already exists
+    existing_user = await get_user_by_email(db, email)
+    if existing_user:
+        raise ValueError("User with this email already exists")
+    
+    # Hash the password
+    hashed_password = get_password_hash(password)
+    
+    # Generate display name if not provided
+    if not display_name and first_name and last_name:
+        display_name = f"{first_name} {last_name}"
+    elif not display_name and first_name:
+        display_name = first_name
+    
+    # Create new user
+    user = User(
+        email=email,
+        password_hash=hashed_password,
+        first_name=first_name,
+        last_name=last_name,
+        display_name=display_name,
+        phone_number=phone_number,
+        is_caregiver=is_caregiver,
+        auth_provider="email",
+        onboarding_completed=False,
+        onboarding_current_step=0,
+        care_receivers_count=0,
+        phone_verified=False
+    )
+    
+    db.add(user)
+    await db.flush()
+    return user
+
+async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
+    """
+    Get user by email address.
+    """
+    query = select(User).where(User.email == email)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+async def get_user_by_display_name(db: AsyncSession, display_name: str) -> Optional[User]:
+    """
+    Get user by display name.
+    """
+    query = select(User).where(User.display_name == display_name)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+async def get_user_by_id(db: AsyncSession, user_id: uuid.UUID) -> Optional[User]:
+    """
+    Get user by ID.
+    """
+    query = select(User).where(User.id == user_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+async def authenticate_user(db: AsyncSession, email: str, password: str) -> Optional[User]:
+    """
+    Authenticate user with email and password.
+    """
+    user = await get_user_by_email(db, email)
+    if not user:
+        return None
+    if not user.password_hash or not verify_password(password, user.password_hash):
+        return None
+    return user
+
+async def update_user_last_login(db: AsyncSession, user_id: uuid.UUID) -> None:
+    """
+    Update user's last login timestamp.
+    """
+    query = update(User).where(User.id == user_id).values(
+        last_login_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    )
+    await db.execute(query)
+
+async def update_user_profile(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    first_name: str = None,
+    last_name: str = None,
+    display_name: str = None,
+    avatar: str = None,
+    phone_number: str = None,
+    is_caregiver: bool = None,
+    preferences: Dict[str, Any] = None
+) -> Optional[User]:
+    """
+    Update user profile information.
+    """
+    update_data = {"updated_at": datetime.utcnow()}
+    
+    if first_name is not None:
+        update_data["first_name"] = first_name
+    if last_name is not None:
+        update_data["last_name"] = last_name
+    if display_name is not None:
+        update_data["display_name"] = display_name
+    if avatar is not None:
+        update_data["avatar"] = avatar
+    if phone_number is not None:
+        update_data["phone_number"] = phone_number
+    if is_caregiver is not None:
+        update_data["is_caregiver"] = is_caregiver
+    if preferences is not None:
+        update_data["preferences"] = preferences
+    
+    if len(update_data) <= 1:  # Only updated_at
+        return None
+    
+    query = update(User).where(User.id == user_id).values(**update_data)
+    await db.execute(query)
+    
+    # Return updated user
+    return await get_user_by_id(db, user_id)
+
+async def update_onboarding_progress(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    current_step: int,
+    completed: bool = False
+) -> None:
+    """
+    Update user's onboarding progress.
+    """
+    update_data = {
+        "onboarding_current_step": current_step,
+        "updated_at": datetime.utcnow()
+    }
+    
+    if completed:
+        update_data["onboarding_completed"] = True
+    
+    query = update(User).where(User.id == user_id).values(**update_data)
+    await db.execute(query)
 

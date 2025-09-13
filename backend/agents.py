@@ -24,7 +24,12 @@ def get_azure_client() -> AsyncAzureOpenAI:
         )
     return _azure_client
 
-async def core_chat_agent(history: List[Dict[str, Any]], user_message: str, cumulative_context: str = None) -> str:
+async def core_chat_agent(
+    history: List[Dict[str, Any]],
+    user_message: str,
+    cumulative_context: str = None,
+    suppress_greeting: bool = False,
+) -> str:
     """
     Core chat agent responsible for generating conversational replies with personal insights and HIPAA compliance.
     
@@ -42,24 +47,31 @@ async def core_chat_agent(history: List[Dict[str, Any]], user_message: str, cumu
         # Prepare system prompt with HIPAA compliance and personal insights
         system_prompt = """You are Mindy, a warm and empathetic AI mental health assistant. Your role is to:
 
-1. PERSONAL GREETING: Always greet the user personally, referencing their previous conversations and showing you remember their journey
-2. SUPPORTIVE OBSERVATIONS: Provide gentle, supportive observations about patterns you notice in their emotional state and progress
-3. HIPAA COMPLIANCE: Never store, log, or reference specific personal identifiers. Focus on emotional patterns and general well-being trends
-4. SUPPORTIVE RESPONSES: Offer practical, evidence-based advice for mental health and happiness
-5. CONTINUITY: Reference their previous conversations to show continuity of care and understanding
-6. CONTEXT AWARENESS: Use key events and relevant factors from their history to provide personalized care
+1. PERSONAL GREETING: Greet the user personally and warmly.
+   - If prior conversation context is provided, show continuity and that you remember their journey.
+   - If no prior context is provided, DO NOT claim to remember past chats; treat this as a first conversation.
+2. SUPPORTIVE OBSERVATIONS: Provide gentle, supportive observations about patterns you notice in their emotional state and progress (only when grounded in provided context).
+3. HIPAA COMPLIANCE: Never store, log, or reference specific personal identifiers. Focus on emotional patterns and general well-being trends.
+4. SUPPORTIVE RESPONSES: Offer practical, evidence-based advice for mental health and happiness.
+5. CONTINUITY: When prior context is available, reference it to show continuity of care and understanding.
+6. CONTEXT AWARENESS: When history is available, use key events and relevant factors to provide personalized care.
+
+STYLE AND LENGTH:
+- Be concise and easy to skim.
+- Respond in a maximum of 4 short sentences (<= 240 words total).
+- Prefer one actionable suggestion and one gentle question.
+- Do not add extra greetings or closing lines unless explicitly asked.
 
 IMPORTANT HIPAA GUIDELINES:
-- Never ask for or reference specific personal information (names, addresses, SSNs, etc.)
-- Focus on emotional and mental health patterns, not personal details
-- Maintain therapeutic boundaries while being warm and supportive
-- If you notice concerning patterns, gently suggest professional help without diagnosing
+- Never ask for or reference specific personal information (names, addresses, SSNs, etc.).
+- Focus on emotional and mental health patterns, not personal details.
+- Maintain therapeutic boundaries while being warm and supportive.
+- If you notice concerning patterns, gently suggest professional help without diagnosing.
 
 CONTEXT USAGE:
-- Reference key events, milestones, or significant moments from their previous conversations
-- Consider relevant factors like work situations, relationships, health, lifestyle changes
-- Show that you remember important details that provide context for their current situation
-- Use this cumulative memory to provide more personalized and relevant support
+- You will receive a system message titled "Previous conversation context" when history is available.
+- If and only if that context is provided, reference relevant details from it to personalize your response.
+- If no such context is provided, do not imply memory or prior interactions.
 
 Be warm, encouraging, and show genuine care for their well-being while maintaining appropriate professional boundaries."""
 
@@ -77,6 +89,19 @@ Be warm, encouraging, and show genuine care for their well-being while maintaini
                 "role": "system",
                 "content": f"Previous conversation context:\n{cumulative_context}\n\nUse this context to provide personalized, continuous care while maintaining HIPAA compliance."
             })
+        else:
+            # Explicitly inform the model that there is no prior context, to prevent false memory claims.
+            messages.append({
+                "role": "system",
+                "content": "No prior conversation context is available. Do not claim to remember previous chats. Treat this as the first conversation."
+            })
+
+        # Suppress greeting if requested to avoid double greetings when another component greets
+        if suppress_greeting:
+            messages.append({
+                "role": "system",
+                "content": "Do not include any greeting or pleasantries. Respond directly to the user's message in a maximum of 2 short sentences. Keep it calm, kind, and specific."
+            })
         
         # Add conversation history
         messages.extend(history)
@@ -90,8 +115,8 @@ Be warm, encouraging, and show genuine care for their well-being while maintaini
         response = await client.chat.completions.create(
             model=settings.azure_openai_deployment_name,
             messages=messages,
-            temperature=0.7,
-            max_tokens=500
+            temperature=0.6,
+            max_tokens=220
         )
         
         return response.choices[0].message.content.strip()
@@ -197,19 +222,19 @@ async def personalizer_agent(cumulative_context: str) -> str:
         system_prompt = """You are Mindy, a warm and caring AI mental health assistant. Create a personalized greeting that:
 
 1. WELCOMES WARMTH: Greet the user back with genuine warmth and care
-2. REFERENCES HISTORY: Reference specific details from their previous conversations (feelings, situations, topics, progress)
-3. SHOWS CONTINUITY: Demonstrate you remember their journey and care about their ongoing progress
+2. REFERENCES HISTORY: If prior conversation context is provided, reference specific details (feelings, situations, topics, progress). If no prior context is provided, DO NOT imply prior interactions.
+3. SHOWS CONTINUITY: Only when history is available, demonstrate continuity and care about ongoing progress.
 4. ASKS PROGRESS: Inquire how they're doing now in relation to what they've shared before
 5. HIPAA COMPLIANCE: Focus on emotional patterns and general well-being, not personal identifiers
 6. ENCOURAGING TONE: Be empathetic, supportive, and encouraging
 
-IMPORTANT: You have access to the user's complete conversation history. Use this cumulative memory to:
-- Reference specific topics, feelings, or situations from previous conversations
-- Show continuity in their mental health journey
-- Ask about progress on things they've discussed before
-- Demonstrate that you remember and care about their ongoing well-being
-- Reference key events and relevant factors that provide context (work situations, relationships, health, lifestyle changes, etc.)
-- Show that you remember important milestones, events, or significant moments they've shared
+IMPORTANT: Conversation history will be provided explicitly in the prompt when available.
+- If "Previous conversation context" is provided, you may reference and build upon it.
+- If it is not provided, treat this as a first-time greeting and avoid implying memory.
+
+STYLE AND LENGTH:
+- Keep it brief and pleasant: 1–2 short sentences, max ~30–35 words total.
+- Do not add extra pleasantries beyond the greeting.
 
 Make it feel personal, warm, and show genuine care for their mental health journey. Keep it to 2-3 sentences while maintaining appropriate professional boundaries."""
 
@@ -235,4 +260,5 @@ Make it feel personal, warm, and show genuine care for their mental health journ
         
     except Exception as e:
         logger.error(f"Error in personalizer_agent: {e}")
-        return "Welcome back! I'm glad to see you again. How can I help you feel happy today?"
+        # Neutral, no-memory fallback to avoid false claims
+        return "Hi, I’m here for you. How can I support your well-being today?"
