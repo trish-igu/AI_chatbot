@@ -90,11 +90,13 @@ class Settings(BaseSettings):
 
     def validate_secrets(self):
         """Validate that all required secrets are loaded, with fallbacks for local dev."""
-        # --- CRITICAL CHANGE FOR LOCAL DEVELOPMENT ---
-        # If database_url is not loaded or is the unix socket path, override it for the proxy.
-        if not self.database_url or self.database_url.startswith("postgresql+asyncpg://postgres:aktmar@/mental_health_app?host=/cloudsql/"):
-            self.database_url = "postgresql+asyncpg://postgres:aktmar@127.0.0.1:5432/mental_health_app"
-            print(f"OVERRIDE: Using local Cloud SQL Auth Proxy DATABASE_URL: {self.database_url}")
+        # --- Local-only override (skip in Cloud Run where K_SERVICE is present) ---
+        running_in_cloud_run = bool(os.getenv("K_SERVICE"))
+        if not running_in_cloud_run:
+            # If database_url is not loaded or is the unix socket path, override it for local proxy.
+            if not self.database_url or self.database_url.startswith("postgresql+asyncpg://postgres:aktmar@/mental_health_app?host=/cloudsql/"):
+                self.database_url = "postgresql+asyncpg://postgres:aktmar@127.0.0.1:5432/mental_health_app"
+                print(f"OVERRIDE: Using local Cloud SQL Auth Proxy DATABASE_URL: {self.database_url}")
         
         # Fallbacks for other secrets if not found
         if not self.azure_openai_api_key:

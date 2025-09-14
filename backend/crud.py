@@ -124,6 +124,17 @@ async def update_conversation_timestamp(
     
     await db.execute(query)
 
+async def update_conversation_title(
+    db: AsyncSession,
+    conversation_id: uuid.UUID,
+    title: str
+) -> None:
+    """Update the title of a conversation."""
+    query = update(ChatbotConversationAudit).where(
+        ChatbotConversationAudit.conversation_id == conversation_id
+    ).values(title=title)
+    await db.execute(query)
+
 async def get_message_history(
     db: AsyncSession, 
     conversation_id: uuid.UUID, 
@@ -179,6 +190,51 @@ async def update_conversation_summary(
         ChatbotConversationAudit.conversation_id == conversation_id
     ).values(**update_data)
     
+    await db.execute(query)
+
+async def increment_conversation_token_usage(
+    db: AsyncSession,
+    conversation_id: uuid.UUID,
+    usage_delta: Dict[str, int],
+    model: Optional[str] = None,
+) -> None:
+    """
+    Increment the conversation's cumulative token_usage JSONB by the provided delta.
+
+    The JSON structure maintained is a simple cumulative counter:
+    {
+        "prompt_tokens": int,
+        "completion_tokens": int,
+        "total_tokens": int
+    }
+    """
+    # Fetch existing token_usage
+    result = await db.execute(
+        select(ChatbotConversationAudit.token_usage).where(
+            ChatbotConversationAudit.conversation_id == conversation_id
+        )
+    )
+    current_usage: Optional[Dict[str, int]] = result.scalar_one_or_none()
+
+    # Initialize if missing
+    if not isinstance(current_usage, dict):
+        current_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    # Safely add deltas
+    new_usage = {
+        "prompt_tokens": int(current_usage.get("prompt_tokens", 0) or 0) + int(usage_delta.get("prompt_tokens", 0) or 0),
+        "completion_tokens": int(current_usage.get("completion_tokens", 0) or 0) + int(usage_delta.get("completion_tokens", 0) or 0),
+        "total_tokens": int(current_usage.get("total_tokens", 0) or 0) + int(usage_delta.get("total_tokens", 0) or 0),
+    }
+
+    update_data: Dict[str, Any] = {"token_usage": new_usage}
+    if model:
+        update_data["model"] = model
+
+    query = update(ChatbotConversationAudit).where(
+        ChatbotConversationAudit.conversation_id == conversation_id
+    ).values(**update_data)
+
     await db.execute(query)
 
 async def get_conversations_to_summarize(db: AsyncSession) -> List[ChatbotConversationAudit]:

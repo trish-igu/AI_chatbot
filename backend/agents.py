@@ -3,7 +3,7 @@ Multi-agent system for the conversational AI application.
 Contains three specialized agents with distinct responsibilities.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from openai import AsyncAzureOpenAI
 from config import settings
 import logging
@@ -29,7 +29,7 @@ async def core_chat_agent(
     user_message: str,
     cumulative_context: str = None,
     suppress_greeting: bool = False,
-) -> str:
+) -> Tuple[str, Dict[str, int], str]:
     """
     Core chat agent responsible for generating conversational replies with personal insights and HIPAA compliance.
     
@@ -119,7 +119,15 @@ Be warm, encouraging, and show genuine care for their well-being while maintaini
             max_tokens=220
         )
         
-        return response.choices[0].message.content.strip()
+        text = response.choices[0].message.content.strip()
+        # Azure responses include usage fields
+        usage = {
+            "prompt_tokens": getattr(getattr(response, "usage", None), "prompt_tokens", 0) or 0,
+            "completion_tokens": getattr(getattr(response, "usage", None), "completion_tokens", 0) or 0,
+            "total_tokens": getattr(getattr(response, "usage", None), "total_tokens", 0) or 0,
+        }
+        model_name = getattr(response, "model", settings.azure_openai_deployment_name)
+        return text, usage, model_name
         
     except Exception as e:
         logger.error(f"Error in core_chat_agent: {e}")
@@ -127,11 +135,19 @@ Be warm, encouraging, and show genuine care for their well-being while maintaini
         # Handle content filter errors specifically
         if "content_filter" in str(e) or "ResponsibleAIPolicyViolation" in str(e):
             logger.warning("Content filter triggered - providing safe fallback response")
-            return "I understand you'd like to discuss something important. I'm here to support you with your mental health and well-being. Could you please rephrase your message in a way that focuses on your emotional state or concerns?"
+            return (
+                "I understand you'd like to discuss something important. I'm here to support you with your mental health and well-being. Could you please rephrase your message in a way that focuses on your emotional state or concerns?",
+                {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                settings.azure_openai_deployment_name,
+            )
         
-        return "I'm sorry, I'm having trouble processing your message right now. Please try again."
+        return (
+            "I'm sorry, I'm having trouble processing your message right now. Please try again.",
+            {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            settings.azure_openai_deployment_name,
+        )
 
-async def summarizer_agent(conversation_history: List[Dict[str, Any]], cumulative_context: str = None) -> str:
+async def summarizer_agent(conversation_history: List[Dict[str, Any]], cumulative_context: str = None) -> Tuple[str, Dict[str, int], str]:
     """
     Summarizer agent responsible for generating comprehensive conversation summaries with cumulative context.
     
@@ -200,13 +216,24 @@ Create a detailed but concise summary (2-3 sentences, under 100 words) that will
             max_tokens=150
         )
         
-        return response.choices[0].message.content.strip()
+        text = response.choices[0].message.content.strip()
+        usage = {
+            "prompt_tokens": getattr(getattr(response, "usage", None), "prompt_tokens", 0) or 0,
+            "completion_tokens": getattr(getattr(response, "usage", None), "completion_tokens", 0) or 0,
+            "total_tokens": getattr(getattr(response, "usage", None), "total_tokens", 0) or 0,
+        }
+        model_name = getattr(response, "model", settings.azure_openai_deployment_name)
+        return text, usage, model_name
         
     except Exception as e:
         logger.error(f"Error in summarizer_agent: {e}")
-        return "Previous conversation about general topics"
+        return (
+            "Previous conversation about general topics",
+            {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            settings.azure_openai_deployment_name,
+        )
 
-async def personalizer_agent(cumulative_context: str) -> str:
+async def personalizer_agent(cumulative_context: str) -> Tuple[str, Dict[str, int], str]:
     """
     Personalizer agent responsible for generating warm, welcoming greetings with cumulative context.
     
@@ -256,9 +283,20 @@ Make it feel personal, warm, and show genuine care for their mental health journ
             max_tokens=200
         )
         
-        return response.choices[0].message.content.strip()
+        text = response.choices[0].message.content.strip()
+        usage = {
+            "prompt_tokens": getattr(getattr(response, "usage", None), "prompt_tokens", 0) or 0,
+            "completion_tokens": getattr(getattr(response, "usage", None), "completion_tokens", 0) or 0,
+            "total_tokens": getattr(getattr(response, "usage", None), "total_tokens", 0) or 0,
+        }
+        model_name = getattr(response, "model", settings.azure_openai_deployment_name)
+        return text, usage, model_name
         
     except Exception as e:
         logger.error(f"Error in personalizer_agent: {e}")
         # Neutral, no-memory fallback to avoid false claims
-        return "Hi, I’m here for you. How can I support your well-being today?"
+        return (
+            "Hi, I’m here for you. How can I support your well-being today?",
+            {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            settings.azure_openai_deployment_name,
+        )

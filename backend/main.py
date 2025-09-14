@@ -32,6 +32,8 @@ from crud import (
     get_user_inactivity_status,
     get_conversations_to_summarize_by_user_inactivity,
     get_conversations_by_status,
+    increment_conversation_token_usage,
+    update_conversation_title,
     # Authentication CRUD operations
     create_user,
     get_user_by_id,
@@ -368,10 +370,10 @@ async def start_conversation(
         # 2. Call the appropriate agent for the greeting
         if cumulative_context and cumulative_context != "No previous conversation history available.":
             # For returning users, use the personalizer_agent for a warm greeting
-            initial_greeting = await personalizer_agent(cumulative_context)
+            initial_greeting, usage, model_name = await personalizer_agent(cumulative_context)
         else:
             # For new users, get a generic but friendly opening from the core agent
-            initial_greeting = await core_chat_agent(
+            initial_greeting, usage, model_name = await core_chat_agent(
                 history=[],
                 user_message="Hello", # A neutral starting point
                 cumulative_context=cumulative_context,
@@ -386,6 +388,8 @@ async def start_conversation(
         # 4. Save the AI's greeting as the first message
         await save_message(db, conversation.conversation_id, user_id, "assistant", {"text": initial_greeting})
         await update_conversation_timestamp(db, conversation.conversation_id)
+        # Record token usage and model
+        await increment_conversation_token_usage(db, conversation.conversation_id, usage, model_name)
 
         await db.commit()
 
@@ -432,7 +436,7 @@ async def chat(
         formatted_history = [{"role": msg.role, "content": msg.content.get("text", str(msg.content))} for msg in message_history]
 
         # 3. Call the Core Chat Agent, always suppressing the greeting
-        ai_response = await core_chat_agent(
+        ai_response, usage, model_name = await core_chat_agent(
             history=formatted_history,
             user_message=user_message,
             cumulative_context=cumulative_context,
@@ -444,6 +448,8 @@ async def chat(
         await save_message(db, conversation_id, user_id, "assistant", {"text": ai_response})
         await update_conversation_timestamp(db, conversation_id)
         await update_conversation_status(db, conversation_id, "in-progress")
+        # Record token usage and model
+        await increment_conversation_token_usage(db, conversation_id, usage, model_name)
 
         await db.commit()
         

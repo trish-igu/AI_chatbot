@@ -148,3 +148,10 @@ class UserUpdate(BaseModel):
         if v and not re.match(r'^\+?[\d\s\-\(\)]+$', v):
             raise ValueError('Invalid phone number format')
         return v
+
+
+# Greeting Schemas
+class GreetingResponse(BaseModel):
+    """Response model for assistant-initiated greeting."""
+    conversation_id: UUID = Field(..., description="UUID of the new conversation started by the assistant")
+    greeting: str = Field(..., description="Assistant's greeting message")

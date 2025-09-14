@@ -127,9 +127,9 @@ class SummarizationService:
             ]
             
             logger.info(f"Generating summary for conversation {conversation_id}...")
-            summary = await summarizer_agent(formatted_messages, cumulative_context)
+            summary, usage, model_name = await summarizer_agent(formatted_messages, cumulative_context)
             
-            await update_conversation_summary(db, conversation_id, summary)
+            await update_conversation_summary(db, conversation_id, summary, model=model_name, token_usage=usage)
             logger.info(f"Successfully summarized conversation {conversation_id}.")
             
             # Commit this individual summary immediately.
