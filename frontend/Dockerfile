@@ -4,6 +4,14 @@ FROM python:3.10-slim
 # Set working directory
 WORKDIR /app
 
+# Environment defaults and Python runtime flags
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    STREAMLIT_SERVER_HEADLESS=true \
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
+    # Default backend URL; override at runtime with -e BASE_URL=...
+    BASE_URL=http://backend:8000
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
@@ -13,7 +21,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .

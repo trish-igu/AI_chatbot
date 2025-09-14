@@ -13,8 +13,24 @@ from datetime import datetime
 import time
 import os
 
-# API Configuration - configurable via environment variable for Cloud Run
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
+# Helper: simulate streaming by yielding small chunks for the UI
+def _simulate_streaming(text: str, chunk_size: int = 6, delay_seconds: float = 0.02):
+    """Yield small chunks of text to simulate streaming in the UI."""
+    if not text:
+        return
+    for i in range(0, len(text), chunk_size):
+        yield text[i:i+chunk_size]
+        time.sleep(delay_seconds)
+
+# API Configuration - prefer Streamlit Secrets, then env var, then localhost
+_default_backend_url = "http://localhost:8000"
+_env_backend_url = os.getenv("BASE_URL")
+try:
+    _secrets_backend_url = st.secrets["BASE_URL"] if "BASE_URL" in st.secrets else None
+except Exception:
+    _secrets_backend_url = None
+
+BASE_URL = _secrets_backend_url or _env_backend_url or _default_backend_url
 
 class WebChatInterface:
     def __init__(self):
@@ -273,13 +289,8 @@ def run_web_chat():
                 st.error(response["error"])
             else:
                 full_text = response["response"] or ""
-                placeholder = st.empty()
-                streamed = ""
-                # Stream chunk-by-chunk to simulate typing
-                for i in range(0, len(full_text), 6):
-                    streamed = full_text[:i+6]
-                    placeholder.markdown(streamed)
-                    time.sleep(0.02)
+                # Stream chunk-by-chunk to simulate typing using Streamlit's write_stream
+                st.write_stream(_simulate_streaming(full_text))
                 # Finalize message
                 st.session_state.conversation_id = response["conversation_id"]
                 st.session_state.messages.append({
