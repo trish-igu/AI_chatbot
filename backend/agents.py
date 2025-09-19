@@ -29,6 +29,7 @@ async def core_chat_agent(
     user_message: str,
     cumulative_context: str = None,
     suppress_greeting: bool = False,
+    first_name: Optional[str] = None,
 ) -> Tuple[str, Dict[str, int], str]:
     """
     Core chat agent responsible for generating conversational replies with personal insights and HIPAA compliance.
@@ -54,13 +55,19 @@ async def core_chat_agent(
 3. HIPAA COMPLIANCE: Never store, log, or reference specific personal identifiers. Focus on emotional patterns and general well-being trends.
 4. SUPPORTIVE RESPONSES: Offer practical, evidence-based advice for mental health and happiness.
 5. CONTINUITY: When prior context is available, reference it to show continuity of care and understanding.
-6. CONTEXT AWARENESS: When history is available, use key events and relevant factors to provide personalized care.
+6. CONTEXT AWARENESS: When history is available, use key events and relevant factors to provide personalized care. Pay close attention to the timestamps provided with each message (e.g., [YYYY-MM-DD HH:MM]) to understand the timeline of events. Prioritize the most recent messages for questions about recent events (e.g., 'yesterday').
+
+MEMORY USAGE:
+- The 'history' contains the immediate, ongoing conversation. Use it for high-fidelity, short-term recall.
+- The 'Previous conversation context' is a summary of past conversations. Use it to understand long-term patterns, themes, and the user's overall journey.
+- If there's a conflict between the immediate history and the long-term context, give more weight to the immediate history for recent events.
 
 STYLE AND LENGTH:
-- Be concise and easy to skim.
-- Respond in a maximum of 4 short sentences (<= 240 words total).
-- Prefer one actionable suggestion and one gentle question.
-- Do not add extra greetings or closing lines unless explicitly asked.
+- Be clear and easy to skim.
+- Aim for 4–6 concise sentences (up to ~220 words) with a therapist-like tone.
+- Use reflective listening, validation, and at least one open-ended question.
+- Offer 1–2 practical coping tools or next steps when appropriate.
+- Avoid unnecessary pleasantries; focus on supportive, clinical warmth.
 
 IMPORTANT HIPAA GUIDELINES:
 - Never ask for or reference specific personal information (names, addresses, SSNs, etc.).
@@ -100,7 +107,14 @@ Be warm, encouraging, and show genuine care for their well-being while maintaini
         if suppress_greeting:
             messages.append({
                 "role": "system",
-                "content": "Do not include any greeting or pleasantries. Respond directly to the user's message in a maximum of 2 short sentences. Keep it calm, kind, and specific."
+                "content": "Do not include any greeting or pleasantries. Respond directly to the user's message in 3–6 sentences. Use reflective listening, validation, and a supportive, therapist-like tone. Ask one gentle, open-ended question and, if helpful, offer 1–2 practical coping steps."
+            })
+        else:
+            # When not suppressed (e.g., first message in a conversation), ensure greeting starts with user's first name
+            name_for_greeting = (first_name or "there").strip()
+            messages.append({
+                "role": "system",
+                "content": f"Start your reply with: 'Hi {name_for_greeting},' then continue."
             })
         
         # Add conversation history
@@ -116,7 +130,7 @@ Be warm, encouraging, and show genuine care for their well-being while maintaini
             model=settings.azure_openai_deployment_name,
             messages=messages,
             temperature=0.6,
-            max_tokens=220
+            max_tokens=350
         )
         
         text = response.choices[0].message.content.strip()
@@ -172,7 +186,7 @@ async def summarizer_agent(conversation_history: List[Dict[str, Any]], cumulativ
         
         system_prompt = """You are an expert mental health conversation summarizer. Create a comprehensive summary that captures:
 
-1. EMOTIONAL STATE: How the user was feeling throughout the conversation
+1. CHRONOLOGICAL EMOTIONAL JOURNEY: Detail the user's emotional state in the order it evolved during the conversation (e.g., 'The user started by feeling sad about a friend leaving, but later in the conversation, they expressed happiness about a different friend's engagement.').
 2. KEY TOPICS: Main themes, concerns, and situations discussed
 3. PROGRESS INDICATORS: Any improvements, setbacks, or changes in their mental state
 4. SUPPORT PROVIDED: Advice, strategies, or interventions discussed
@@ -233,7 +247,7 @@ Create a detailed but concise summary (2-3 sentences, under 100 words) that will
             settings.azure_openai_deployment_name,
         )
 
-async def personalizer_agent(cumulative_context: str) -> Tuple[str, Dict[str, int], str]:
+async def personalizer_agent(cumulative_context: str, first_name: Optional[str] = None) -> Tuple[str, Dict[str, int], str]:
     """
     Personalizer agent responsible for generating warm, welcoming greetings with cumulative context.
     
@@ -260,11 +274,13 @@ IMPORTANT: Conversation history will be provided explicitly in the prompt when a
 - If it is not provided, treat this as a first-time greeting and avoid implying memory.
 
 STYLE AND LENGTH:
-- Keep it brief and pleasant: 1–2 short sentences, max ~30–35 words total.
+- Keep it brief and pleasant: 1–2 short sentences (up to ~45 words).
+- Start with the user's first name if provided.
 - Do not add extra pleasantries beyond the greeting.
 
-Make it feel personal, warm, and show genuine care for their mental health journey. Keep it to 2-3 sentences while maintaining appropriate professional boundaries."""
+Make it feel personal, warm, and show genuine care for their mental health journey."""
 
+        name_for_greeting = (first_name or "there").strip()
         messages = [
             {
                 "role": "system",
@@ -272,7 +288,7 @@ Make it feel personal, warm, and show genuine care for their mental health journ
             },
             {
                 "role": "user",
-                "content": f"Generate a warm, personalized greeting for a user with this conversation history:\n\n{cumulative_context}"
+                "content": f"Generate a warm, personalized greeting that begins with 'Hi {name_for_greeting},' for a user with this conversation history:\n\n{cumulative_context}"
             }
         ]
         

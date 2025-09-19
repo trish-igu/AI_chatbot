@@ -12,6 +12,14 @@ import uuid
 from datetime import datetime
 import time
 import os
+from pathlib import Path
+
+# Page config must be the first Streamlit command
+st.set_page_config(
+    page_title="I Get Happy - Chat with Mindy",
+    page_icon="😊",
+    layout="wide"
+)
 
 # Helper: simulate streaming by yielding small chunks for the UI
 def _simulate_streaming(text: str, chunk_size: int = 6, delay_seconds: float = 0.02):
@@ -22,15 +30,20 @@ def _simulate_streaming(text: str, chunk_size: int = 6, delay_seconds: float = 0
         yield text[i:i+chunk_size]
         time.sleep(delay_seconds)
 
-# API Configuration - prefer Streamlit Secrets, then env var, then localhost
-_default_backend_url = "http://localhost:8000"
+# API Configuration - prefer env var, then Streamlit Secrets (only if file exists), then localhost
+BASE_URL = "http://localhost:8000"
 _env_backend_url = os.getenv("BASE_URL")
-try:
-    _secrets_backend_url = st.secrets["BASE_URL"] if "BASE_URL" in st.secrets else None
-except Exception:
-    _secrets_backend_url = None
-
-BASE_URL = _secrets_backend_url or _env_backend_url or _default_backend_url
+if _env_backend_url:
+    BASE_URL = _env_backend_url
+else:
+    home_secrets = Path.home() / ".streamlit" / "secrets.toml"
+    local_secrets = Path(__file__).parent / ".streamlit" / "secrets.toml"
+    if home_secrets.exists() or local_secrets.exists():
+        try:
+            if "BASE_URL" in st.secrets:
+                BASE_URL = st.secrets["BASE_URL"]
+        except Exception:
+            pass
 
 class WebChatInterface:
     def __init__(self):
@@ -128,14 +141,18 @@ class WebChatInterface:
         except Exception as e:
             return {"error": f"Connection error: {str(e)}. Make sure the backend is running on {BASE_URL}"}
 
+    async def health_check(self):
+        """Ping backend health endpoint."""
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(f"{BASE_URL}/health") as response:
+                    text = await response.text()
+                    return {"status": response.status, "body": text}
+        except Exception as e:
+            return {"status": None, "error": str(e)}
+
 def run_web_chat():
     """Run the web chat interface."""
-    st.set_page_config(
-        page_title="I Get Happy - Chat with Mindy",
-        page_icon="😊",
-        layout="wide"
-    )
-    
     st.title("😊 I Get Happy")
     st.subheader("Chat with Mindy, your AI Mental Health Assistant")
     
@@ -227,6 +244,13 @@ def run_web_chat():
         st.header("ℹ️ Info")
         if st.session_state.user_info:
             st.write(f"**User:** {st.session_state.user_info.get('email', 'Unknown')}")
+        st.write(f"**Backend:** {BASE_URL}")
+        if st.button("🔌 Check backend connection"):
+            result = asyncio.run(check_backend())
+            if result.get("status") == 200:
+                st.success("Backend reachable ✅")
+            else:
+                st.error(f"Backend not reachable. Status: {result.get('status')}, Error: {result.get('error', result.get('body',''))}")
         st.write("**Features:**")
         st.write("• Personalized AI responses")
         st.write("• Conversation history")
@@ -317,6 +341,11 @@ async def register_user(email: str, password: str, first_name: str, last_name: s
     """Perform registration and return token payload or error."""
     async with WebChatInterface() as chat:
         return await chat.register_user(email, password, first_name, last_name)
+
+async def check_backend():
+    """Check backend /health endpoint."""
+    async with WebChatInterface() as chat:
+        return await chat.health_check()
 
 if __name__ == "__main__":
     run_web_chat()

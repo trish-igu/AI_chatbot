@@ -370,14 +370,15 @@ async def start_conversation(
         # 2. Call the appropriate agent for the greeting
         if cumulative_context and cumulative_context != "No previous conversation history available.":
             # For returning users, use the personalizer_agent for a warm greeting
-            initial_greeting, usage, model_name = await personalizer_agent(cumulative_context)
+            initial_greeting, usage, model_name = await personalizer_agent(cumulative_context, first_name=user.display_name or user.email)
         else:
             # For new users, get a generic but friendly opening from the core agent
             initial_greeting, usage, model_name = await core_chat_agent(
                 history=[],
                 user_message="Hello", # A neutral starting point
                 cumulative_context=cumulative_context,
-                suppress_greeting=False
+                suppress_greeting=False,
+                first_name=user.display_name or user.email
             )
             
         # 3. Create a new conversation in the database
@@ -433,7 +434,13 @@ async def chat(
         # 2. Get history and context
         cumulative_context = await get_cumulative_summary_context(db, user_id)
         message_history = await get_message_history(db, conversation_id)
-        formatted_history = [{"role": msg.role, "content": msg.content.get("text", str(msg.content))} for msg in message_history]
+        formatted_history = [
+            {
+                "role": msg.role,
+                "content": f"[{msg.created_at.strftime('%Y-%m-%d %H:%M')}] {msg.content.get('text', str(msg.content))}"
+            }
+            for msg in message_history
+        ]
 
         # 3. Call the Core Chat Agent, always suppressing the greeting
         ai_response, usage, model_name = await core_chat_agent(
