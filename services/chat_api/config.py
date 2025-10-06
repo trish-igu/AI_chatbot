@@ -15,32 +15,20 @@ class Settings(BaseSettings):
     # GCP Configuration
     gcp_project_id: str = "igethappy-dev"
     database_url_secret_name: str = "database-url"
-    azure_openai_api_key_secret_name: str = "azure-openai-api-key"
-    azure_openai_endpoint_secret_name: str = "azure-openai-endpoint"
-    azure_openai_deployment_name_secret_name: str = "azure-openai-deployment-name"
     # Vertex AI (Gemini via Vertex)
     vertex_project_id_secret_name: str = "vertex-project-id"
     vertex_location_secret_name: str = "vertex-location"
     vertex_model_name_secret_name: str = "vertex-model"
-    # Internal API key for proxy pattern
-    internal_api_key_secret_name: str = "internal-api-key"
     
     # ADD THIS: Configuration for the background service
     summarization_interval_seconds: int = 300 # Check every 5 minutes by default
 
     # Loaded secrets (will be populated from Secret Manager or environment)
     database_url: Optional[str] = None
-    azure_openai_api_key: Optional[str] = None
-    azure_openai_endpoint: Optional[str] = None
-    azure_openai_deployment_name: Optional[str] = None
     vertex_project_id: Optional[str] = None
     vertex_location: Optional[str] = None
     vertex_model_name: Optional[str] = None
     llm_provider: str = os.getenv("LLM_PROVIDER", "vertex")
-    # Internal API key resolved value
-    internal_api_key: Optional[str] = None
-    # CORS origins (comma-separated)
-    allowed_origins_env: Optional[str] = None
     
     class Config:
         env_file = ".env"
@@ -64,16 +52,8 @@ class Settings(BaseSettings):
             self.database_url = self._get_secret_with_fallback(
                 client, project_path, self.database_url_secret_name, "DATABASE_URL"
             )
-            self.azure_openai_api_key = self._get_secret_with_fallback(
-                client, project_path, self.azure_openai_api_key_secret_name, "AZURE_OPENAI_API_KEY"
-            )
-            self.azure_openai_endpoint = self._get_secret_with_fallback(
-                client, project_path, self.azure_openai_endpoint_secret_name, "AZURE_OPENAI_ENDPOINT"
-            )
-            self.azure_openai_deployment_name = self._get_secret_with_fallback(
-                client, project_path, self.azure_openai_deployment_name_secret_name, "AZURE_OPENAI_DEPLOYMENT_NAME"
-            )
-            # Vertex AI settings
+
+            # Vertex AI settings (only)
             self.vertex_project_id = self._get_secret_with_fallback(
                 client, project_path, self.vertex_project_id_secret_name, "VERTEX_PROJECT_ID"
             )
@@ -82,10 +62,6 @@ class Settings(BaseSettings):
             )
             self.vertex_model_name = self._get_secret_with_fallback(
                 client, project_path, self.vertex_model_name_secret_name, "VERTEX_MODEL"
-            )
-            # Internal API key for server-to-server calls
-            self.internal_api_key = self._get_secret_with_fallback(
-                client, project_path, self.internal_api_key_secret_name, "INTERNAL_API_KEY"
             )
             # (Removed other providers: OpenAI/Anthropic/xAI)
             
@@ -96,14 +72,9 @@ class Settings(BaseSettings):
             print("Falling back to environment variables...")
             # Fallback to environment variables
             self.database_url = os.getenv("DATABASE_URL")
-            self.azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY")
-            self.azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-            self.azure_openai_deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
             self.vertex_project_id = os.getenv("VERTEX_PROJECT_ID")
             self.vertex_location = os.getenv("VERTEX_LOCATION")
             self.vertex_model_name = os.getenv("VERTEX_MODEL")
-            self.internal_api_key = os.getenv("INTERNAL_API_KEY")
-            self.allowed_origins_env = os.getenv("ALLOWED_ORIGINS")
             # (Removed other providers env fallbacks)
 
     def _get_secret_with_fallback(self, client, project_path: str, secret_name: str, env_var_name: str) -> str:
@@ -111,6 +82,7 @@ class Settings(BaseSettings):
         try:
             secret_path = f"{project_path}/secrets/{secret_name}/versions/latest"
             response = client.access_secret_version(request={"name": secret_path})
+            # Trim whitespace/newlines to avoid region/model parsing issues
             return response.payload.data.decode("UTF-8").strip()
         except Exception as e:
             print(f"Could not fetch secret '{secret_name}' from GCP Secret Manager: {e}")
@@ -134,17 +106,7 @@ class Settings(BaseSettings):
                 print(f"OVERRIDE: Using local Cloud SQL Auth Proxy DATABASE_URL: {self.database_url}")
         
         # Fallbacks for other secrets if not found (dev only)
-        if self.llm_provider.lower() == "azure":
-            if not self.azure_openai_api_key:
-                self.azure_openai_api_key = "YOUR_FALLBACK_API_KEY" # Replace if needed
-                print("Using placeholder AZURE_OPENAI_API_KEY")
-            if not self.azure_openai_endpoint:
-                self.azure_openai_endpoint = "YOUR_FALLBACK_ENDPOINT" # Replace if needed
-                print("Using placeholder AZURE_OPENAI_ENDPOINT")
-            if not self.azure_openai_deployment_name:
-                self.azure_openai_deployment_name = "YOUR_FALLBACK_DEPLOYMENT_NAME" # Replace if needed
-                print("Using placeholder AZURE_OPENAI_DEPLOYMENT_NAME")
-        elif self.llm_provider.lower() == "vertex":
+        if self.llm_provider.lower() == "vertex":
             if not self.vertex_project_id:
                 self.vertex_project_id = self.gcp_project_id
                 print("Using default VERTEX_PROJECT_ID from gcp_project_id")
@@ -169,3 +131,5 @@ def get_settings() -> Settings:
 
 # Global settings instance
 settings = get_settings()
+
+

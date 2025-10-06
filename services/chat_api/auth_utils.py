@@ -8,14 +8,14 @@ from typing import Optional, Dict, Any
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from fastapi import HTTPException, status
-from fastapi import Header, Depends
 from config import settings
 import logging
 
 logger = logging.getLogger(__name__)
 
 # Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Prefer bcrypt_sha256 (avoids 72-byte limit), but also accept legacy bcrypt hashes
+pwd_context = CryptContext(schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto")
 
 # JWT Configuration
 SECRET_KEY = "your-secret-key-change-this-in-production"  # TODO: Move to config/secrets
@@ -97,25 +97,3 @@ def create_token_response(user_id: uuid.UUID, username: str) -> Dict[str, Any]:
     }
 
 
-# ---- API Key guard for secure proxy pattern ----
-async def verify_api_key(x_api_key: str = Header(None)) -> None:
-    """FastAPI dependency to verify internal API key via X-API-Key header.
-
-    Raises 401 if missing/invalid.
-    """
-    expected = (settings.internal_api_key or "").strip()
-    provided = (x_api_key or "").strip()
-    if not expected:
-        # If not configured, deny by default in production; allow only explicit configuration
-        logger.error("INTERNAL_API_KEY not configured; rejecting request")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid API key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not provided or provided != expected:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid API key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )

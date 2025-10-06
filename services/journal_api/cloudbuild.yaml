@@ -1,0 +1,32 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/journal-api:$COMMIT_SHA', '.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/journal-api:$COMMIT_SHA']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'journal-api'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/journal-api:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '8001'
+      - '--memory'
+      - '1Gi'
+      - '--cpu'
+      - '1'
+      - '--set-env-vars'
+      - 'DATABASE_URL=postgresql+asyncpg://postgres:aktmar@/mental_health_app?host=/cloudsql/igethappy-dev:us-central1:igethappy-main-db'
+      - '--add-cloudsql-instances'
+      - 'igethappy-dev:us-central1:igethappy-main-db'
+images:
+  - 'gcr.io/$PROJECT_ID/journal-api:$COMMIT_SHA'
+
+

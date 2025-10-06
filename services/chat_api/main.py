@@ -3,8 +3,8 @@ FastAPI application with a multi-agent orchestrator for the core chat endpoint.
 """
 import uuid
 import asyncio
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import HTTPBearer
+from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,9 +13,8 @@ import logging
 
 from database import get_db, init_database, close_database
 from schemas import (
-    ChatRequest, ChatResponse, HealthResponse,
-    UserRegister, UserLogin, TokenResponse, UserProfile, UserUpdate,
-    StartConversationRequest, ChatMessageRequest, ChatbotResponse,
+    ChatRequest, ChatResponse, HealthResponse, 
+    UserRegister, UserLogin, TokenResponse, UserProfile, UserUpdate
 )
 from crud import (
     get_or_create_user,
@@ -48,7 +47,7 @@ from agents import core_chat_agent, personalizer_agent, summarizer_agent
 # Import background summarization service
 from summarization_service import start_summarization_service, stop_summarization_service
 # Import authentication utilities
-from auth_utils import get_user_id_from_token, create_token_response, verify_api_key
+from auth_utils import get_user_id_from_token, create_token_response
 
 # --- Basic Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -62,7 +61,6 @@ async def lifespan(app: FastAPI):
     logger.info("Application startup...")
     await init_database(settings.database_url)
     
-    # Initialize Vertex globally (agents also initialize lazily, this ensures creds are valid on startup)
     try:
         import vertexai
         vertexai.init(project=settings.vertex_project_id, location=settings.vertex_location)
@@ -99,18 +97,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-origins = ["*"]
-try:
-    if getattr(settings, "allowed_origins_env", None):
-        parsed = [o.strip() for o in settings.allowed_origins_env.split(",") if o.strip()]
-        if parsed:
-            origins = parsed
-except Exception:
-    pass
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -150,13 +139,26 @@ DEV_USER_EMAIL = "dev.user@example.com" # ADDED
 logger.info(f"Using fixed development user ID: {DEV_USER_ID}")
 
 async def get_current_user(
-    authorization: str = Depends(HTTPBearer()),
+    request: Request,
+    auth_credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db)
 ) -> dict:
     """Authentication dependency. Validates JWT token and returns user details."""
     try:
-        # Extract token from Authorization header
-        token = authorization.credentials
+        # Prefer application JWT from X-User-Token when present (Cloud Run ID token is in Authorization)
+        user_token_header = request.headers.get("x-user-token") or request.headers.get("X-User-Token")
+        token: str | None = None
+        if user_token_header:
+            token = user_token_header.split(" ", 1)[1] if user_token_header.lower().startswith("bearer ") else user_token_header
+        elif auth_credentials is not None:
+            # Fall back to Authorization bearer if provided (e.g., server-to-server app token)
+            token = auth_credentials.credentials
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authorization token is missing",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         
         # Get user ID from token
         user_id = get_user_id_from_token(token)
@@ -383,19 +385,18 @@ async def update_user_profile_endpoint(
             detail="Profile update failed"
         )
 
-@app.post("/api/ai/start-conversation", response_model=ChatbotResponse, dependencies=[Depends(verify_api_key)])
+@app.post("/api/ai/start-conversation", response_model=ChatResponse)
 async def start_conversation(
-    body: StartConversationRequest,
-    db: AsyncSession = Depends(get_db),
+    user_info: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Starts a new conversation and returns a personalized greeting.
     The frontend should call this endpoint to begin a new chat session.
     """
     try:
-        # Parse client-provided user id (Flutter authenticates the user; proxy passes the id)
-        user_id = uuid.UUID(body.client_user_id)
-        user_email = None
+        user_id = uuid.UUID(user_info["id"])
+        user_email = user_info["email"]
         
         # Ensure user exists in the database
         user = await get_or_create_user(db, user_id=user_id, email=user_email)
@@ -405,33 +406,34 @@ async def start_conversation(
         # 1. Get long-term memory for personalization
         cumulative_context = await get_cumulative_summary_context(db, user_id)
         
-        # 2. Optionally map provided history (if any) but greeting will generally ignore it
-        mapped_history = []
-        if body.history:
-            for i, text in enumerate(body.history):
-                role = "user" if i % 2 == 0 else "assistant"
-                mapped_history.append({"role": role, "content": text})
-
-        # 3. Call the appropriate agent for the greeting
+        # 2. Call the appropriate agent for the greeting (with recent phrases)
+        from crud import get_recent_user_messages, get_latest_summary_for_user
+        recent_phrases = await get_recent_user_messages(db, user_id, limit=5)
+        latest_summary = await get_latest_summary_for_user(db, user_id)
         if cumulative_context and cumulative_context != "No previous conversation history available.":
             # For returning users, use the personalizer_agent for a warm greeting
-            initial_greeting, usage, model_name = await personalizer_agent(cumulative_context, first_name=user.display_name or (user.email if user.email else None))
+            initial_greeting, usage, model_name = await personalizer_agent(
+                cumulative_context,
+                first_name=user.display_name or user.email,
+                recent_user_phrases=recent_phrases,
+                latest_summary=latest_summary,
+            )
         else:
             # For new users, get a generic but friendly opening from the core agent
             initial_greeting, usage, model_name = await core_chat_agent(
-                history=mapped_history,
+                history=[],
                 user_message="Hello", # A neutral starting point
                 cumulative_context=cumulative_context,
                 suppress_greeting=False,
-                first_name=user.display_name or (user.email if user.email else None),
+                first_name=user.display_name or user.email
             )
-        
-        # 4. Create a new conversation in the database
+            
+        # 3. Create a new conversation in the database
         title = initial_greeting[:60]
         conversation = await create_conversation(db, user_id, title)
         await update_conversation_status(db, conversation.conversation_id, "active")
 
-        # 5. Save the AI's greeting as the first message
+        # 4. Save the AI's greeting as the first message
         await save_message(db, conversation.conversation_id, user_id, "assistant", {"text": initial_greeting})
         await update_conversation_timestamp(db, conversation.conversation_id)
         # Record token usage and model
@@ -439,8 +441,8 @@ async def start_conversation(
 
         await db.commit()
 
-        # 6. Return standardized response
-        return ChatbotResponse(conversation_id=str(conversation.conversation_id), ai_response=initial_greeting, usage=usage, meta={"model": model_name})
+        # 5. Return the new conversation ID and the greeting
+        return ChatResponse(conversation_id=conversation.conversation_id, response=initial_greeting)
 
     except Exception as e:
         logger.error(f"Error in start_conversation endpoint: {e}", exc_info=True)
@@ -450,19 +452,20 @@ async def start_conversation(
 # ==============================================================================
 # === MODIFIED: CHAT ENDPOINT NOW ONLY HANDLES ONGOING CONVERSATIONS ===
 # ==============================================================================
-@app.post("/api/ai/chat", response_model=ChatbotResponse, dependencies=[Depends(verify_api_key)])
+@app.post("/api/ai/chat", response_model=ChatResponse)
 async def chat(
-    request: ChatMessageRequest,
-    db: AsyncSession = Depends(get_db),
+    request: ChatRequest,
+    user_info: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Handles ongoing chat messages within an existing conversation.
     A conversation_id is now REQUIRED.
     """
     try:
-        user_id = uuid.UUID(request.client_user_id)
-        conversation_id = uuid.UUID(request.conversation_id)
-        user_message = request.user_message
+        user_id = uuid.UUID(user_info["id"])
+        conversation_id = request.conversation_id
+        user_message = request.message
         
         if not conversation_id:
             raise HTTPException(
@@ -470,15 +473,12 @@ async def chat(
                 detail="conversation_id is required. Please start a new conversation using the /api/ai/start-conversation endpoint first."
             )
 
-        # 1. Ensure user exists (proxy pattern may send known users without JWT)
-        await get_or_create_user(db, user_id=user_id)
-
-        # 2. Get the existing conversation owned by this user
+        # 1. Get the existing conversation
         conversation = await get_conversation(db, conversation_id, user_id)
         if not conversation:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
-        # 3. Get history and context
+        # 2. Get history and context
         cumulative_context = await get_cumulative_summary_context(db, user_id)
         message_history = await get_message_history(db, conversation_id)
         formatted_history = [
@@ -488,13 +488,8 @@ async def chat(
             }
             for msg in message_history
         ]
-        # Optionally append request.history if provided (ignored by default)
-        if request.history:
-            for i, text in enumerate(request.history):
-                role = "user" if i % 2 == 0 else "assistant"
-                formatted_history.append({"role": role, "content": text})
 
-        # 4. Call the Core Chat Agent, always suppressing the greeting
+        # 3. Call the Core Chat Agent, always suppressing the greeting
         ai_response, usage, model_name = await core_chat_agent(
             history=formatted_history,
             user_message=user_message,
@@ -502,7 +497,7 @@ async def chat(
             suppress_greeting=True, # This prevents repeated greetings
         )
 
-        # 5. Save messages and commit
+        # 4. Save messages and commit
         await save_message(db, conversation_id, user_id, "user", {"text": user_message})
         await save_message(db, conversation_id, user_id, "assistant", {"text": ai_response})
         await update_conversation_timestamp(db, conversation_id)
@@ -511,8 +506,8 @@ async def chat(
         await increment_conversation_token_usage(db, conversation_id, usage, model_name)
 
         await db.commit()
-
-        return ChatbotResponse(conversation_id=str(conversation_id), ai_response=ai_response, usage=usage, meta={"model": model_name})
+        
+        return ChatResponse(conversation_id=conversation_id, response=ai_response)
         
     except Exception as e:
         logger.error(f"AI service error: {e}")
@@ -703,3 +698,5 @@ async def summarize_user_inactive_conversations(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+

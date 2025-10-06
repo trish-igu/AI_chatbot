@@ -157,28 +157,3 @@ class GreetingResponse(BaseModel):
     greeting: str = Field(..., description="Assistant's greeting message")
 
 
-# ---- Secure proxy request/response payloads ----
-class StartConversationRequest(BaseModel):
-    """Proxy pattern start request from trusted server.
-
-    client_user_id: string identifier from the client app (must be UUID-formatted).
-    history: optional alternating list of user/assistant texts (ignored by default).
-    """
-    client_user_id: str = Field(..., description="Client-side user id (UUID string)")
-    history: Optional[List[str]] = Field(None, description="Optional alternating user/assistant text turns")
-
-
-class ChatMessageRequest(BaseModel):
-    """Proxy pattern chat message request from trusted server."""
-    conversation_id: str = Field(..., description="Conversation UUID (string)")
-    user_message: str = Field(..., min_length=1, max_length=4000, description="User message text")
-    client_user_id: str = Field(..., description="Client-side user id (UUID string)")
-    history: Optional[List[str]] = Field(None, description="Optional alternating user/assistant text turns")
-
-
-class ChatbotResponse(BaseModel):
-    """Standardized chatbot response for proxy pattern."""
-    conversation_id: str = Field(..., description="Conversation id as string")
-    ai_response: str = Field(..., description="AI assistant reply")
-    usage: Optional[Dict[str, Any]] = Field(None, description="Token usage meta")
-    meta: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")

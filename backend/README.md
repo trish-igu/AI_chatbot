@@ -225,3 +225,51 @@ Once the server is running, visit:
 5. **Database Connection Pooling**: Tune connection pool settings
 6. **Error Handling**: Implement comprehensive error handling
 7. **Secrets Management**: Use proper secret rotation policies
+
+## Proxy Pattern (Server-to-Server)
+
+FastAPI endpoints for chat are protected by an internal API key passed via `X-API-Key`. Your server (Node/Edge) authenticates the user with Flutter, then forwards requests to FastAPI.
+
+- Header: `X-API-Key: <INTERNAL_API_KEY>`
+- Requests:
+  - Start conversation:
+    ```
+    { "client_user_id": "<uuid>", "history": ["hi", "hello"] }
+    ```
+  - Chat message:
+    ```
+    { "conversation_id": "<uuid>", "user_message": "hi", "client_user_id": "<uuid>", "history": ["..."] }
+    ```
+- Response:
+  ```
+  { "conversation_id": "<uuid>", "ai_response": "...", "usage": { }, "meta": { "model": "..." } }
+  ```
+
+### Environment
+
+- `INTERNAL_API_KEY`: required; set via Secret Manager or env
+- `DATABASE_URL`: Postgres URL (Cloud SQL or local)
+- `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, `VERTEX_MODEL`: Vertex AI settings
+- `ALLOWED_ORIGINS`: comma-separated CORS origins (e.g., `https://your-frontend.example.com`)
+
+### CORS
+
+CORS origins are configurable via `ALLOWED_ORIGINS`. Defaults to `*` if unset. Set this to your server/frontend domains in production.
+
+### Smoke Tests
+
+Start a conversation:
+```
+curl -X POST http://localhost:8000/api/ai/start-conversation \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $INTERNAL_API_KEY" \
+  -d '{"client_user_id":"2f1a4d4e-8c36-4c5c-9b1b-6a3b6a4a1b2c"}'
+```
+
+Send a chat message:
+```
+curl -X POST http://localhost:8000/api/ai/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $INTERNAL_API_KEY" \
+  -d '{"conversation_id":"<conv-uuid>","user_message":"Hello","client_user_id":"2f1a4d4e-8c36-4c5c-9b1b-6a3b6a4a1b2c"}'
+```

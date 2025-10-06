@@ -9,7 +9,7 @@ set -e
 PROJECT_ID="igethappy-dev"
 SERVICE_NAME="igethappy-chatbot"
 REGION="us-central1"
-IMAGE_NAME="gcr.io/$PROJECT_ID/$SERVICE_NAME"
+IMAGE_NAME="us-central1-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME"
 
 echo "🚀 Starting deployment of I Get Happy Chatbot to GCP..."
 
@@ -45,13 +45,13 @@ gcloud run deploy $SERVICE_NAME \
     --image $IMAGE_NAME \
     --region $REGION \
     --platform managed \
-    --allow-unauthenticated \
-    --port 8000 \
+    --port 8080 \
     --memory 2Gi \
     --cpu 2 \
     --min-instances 0 \
     --max-instances 10 \
     --set-env-vars "DATABASE_URL=postgresql+asyncpg://postgres:aktmar@/mental_health_app?host=/cloudsql/igethappy-dev:us-central1:igethappy-main-db" \
+    --set-secrets INTERNAL_API_KEY=internal-api-key:latest \
     --add-cloudsql-instances "igethappy-dev:us-central1:igethappy-main-db"
 
 # Get the service URL
@@ -61,7 +61,17 @@ echo "✅ Deployment completed successfully!"
 echo "🌐 Service URL: $SERVICE_URL"
 echo ""
 echo "📝 Next steps:"
-echo "1. Update your frontend to use: $SERVICE_URL"
+echo "1. Frontend: set PRIMARY_API_BASE to your Node URL, BACKUP_API_BASE to Node Cloud Run."
+NODE_SERVICE="iguh-backend"
+NODE_URL=$(gcloud run services describe "$NODE_SERVICE" --region=$REGION --format="value(status.url)" 2>/dev/null || true)
+if [ -n "$NODE_URL" ]; then
+  echo "   Flutter example:"
+  echo "   flutter run -d chrome \\\" 
+  echo "     --dart-define=PRIMARY_API_BASE=http://localhost:3000 \\\" 
+  echo "     --dart-define=BACKUP_API_BASE=$NODE_URL"
+else
+  echo "   Could not find Node service '$NODE_SERVICE' in $REGION. Configure BACKUP_API_BASE manually."
+fi
 echo "2. Test the authentication endpoints"
 echo "3. Set up a custom domain if needed"
 echo ""

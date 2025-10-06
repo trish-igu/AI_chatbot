@@ -14,8 +14,9 @@ google-cloud-aiplatform>=1.67.0
 pydantic-settings~=2.2.0
 python-dotenv>=1.0.0
 
-# Authentication
-passlib[bcrypt]>=1.7.4
+# Authentication (pin to compatible versions)
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
 python-jose[cryptography]>=3.3.0
 email-validator>=2.0.0
 
@@ -23,3 +24,4 @@ email-validator>=2.0.0
 python-multipart>=0.0.7
 
 requests==2.31.0
+

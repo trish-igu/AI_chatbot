@@ -13,6 +13,11 @@ from datetime import datetime
 import time
 import os
 from pathlib import Path
+import subprocess
+import shutil
+import platform
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport.requests import Request as GoogleAuthRequest
 
 # Page config must be the first Streamlit command
 st.set_page_config(
@@ -30,25 +35,75 @@ def _simulate_streaming(text: str, chunk_size: int = 6, delay_seconds: float = 0
         yield text[i:i+chunk_size]
         time.sleep(delay_seconds)
 
-# API Configuration - prefer env var, then Streamlit Secrets (only if file exists), then localhost
-BASE_URL = "http://localhost:8000"
-_env_backend_url = os.getenv("BASE_URL")
-if _env_backend_url:
-    BASE_URL = _env_backend_url
-else:
-    home_secrets = Path.home() / ".streamlit" / "secrets.toml"
-    local_secrets = Path(__file__).parent / ".streamlit" / "secrets.toml"
-    if home_secrets.exists() or local_secrets.exists():
-        try:
+def _default_base_url() -> str:
+    """Resolve a default backend URL from env, secrets, or localhost."""
+    base = os.getenv("BASE_URL")
+    if base:
+        return base
+    try:
+        home_secrets = Path.home() / ".streamlit" / "secrets.toml"
+        local_secrets = Path(__file__).parent / ".streamlit" / "secrets.toml"
+        if home_secrets.exists() or local_secrets.exists():
             if "BASE_URL" in st.secrets:
-                BASE_URL = st.secrets["BASE_URL"]
-        except Exception:
-            pass
+                return str(st.secrets["BASE_URL"])
+    except Exception:
+        pass
+    return "https://igethappy-chatbot-790537847272.us-central1.run.app"
+
+# Initialize a user-editable backend URL in session state
+if "backend_url" not in st.session_state:
+    st.session_state.backend_url = _default_base_url()
+
+def get_backend_url() -> str:
+    """Get the current backend URL, falling back to default if missing."""
+    return st.session_state.get("backend_url") or _default_base_url()
 
 class WebChatInterface:
-    def __init__(self):
+    def __init__(self, base_url: str = None):
         self.session = None
+        self.base_url = base_url or get_backend_url()
+        self._cached_id_token: str | None = None
+        self._cached_id_token_expiry: float = 0.0
         
+    def _fetch_id_token_via_gcloud(self) -> str:
+        """Fallback: use gcloud to impersonate a service account and mint an ID token."""
+        audience = self.base_url
+        impersonate_sa = os.getenv("GCP_IMPERSONATE_SA", "fastapi-invoker-sa@igethappy-dev.iam.gserviceaccount.com")
+        # Resolve gcloud executable (supports Windows .cmd)
+        gcloud_path = os.getenv("GCLOUD_PATH") or shutil.which("gcloud") or shutil.which("gcloud.cmd")
+        if not gcloud_path:
+            raise RuntimeError("gcloud not found. Install Google Cloud SDK, add it to PATH, or set GCLOUD_PATH to gcloud executable.")
+        cmd = [
+            gcloud_path,
+            "auth",
+            "print-identity-token",
+            f"--impersonate-service-account={impersonate_sa}",
+            f"--audiences={audience}",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            stderr = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(f"gcloud print-identity-token failed: {stderr}")
+        token = (proc.stdout or "").strip()
+        if not token:
+            raise RuntimeError("gcloud did not return an ID token")
+        return token
+
+    async def _get_id_token(self) -> str:
+        """Get an ID token, preferring cached value, then google-auth, then gcloud."""
+        now = time.time()
+        if self._cached_id_token and now < self._cached_id_token_expiry:
+            return self._cached_id_token
+        # Try google-auth with ADC first
+        try:
+            token = await asyncio.to_thread(google_id_token.fetch_id_token, GoogleAuthRequest(), self.base_url)
+        except Exception:
+            # Fallback to gcloud impersonation
+            token = await asyncio.to_thread(self._fetch_id_token_via_gcloud)
+        self._cached_id_token = token
+        self._cached_id_token_expiry = now + 300.0  # refresh every 5 minutes
+        return token
+
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
         return self
@@ -59,18 +114,25 @@ class WebChatInterface:
     
     async def send_message(self, message: str, conversation_id: str = None, token: str = None):
         """Send a message to the chatbot."""
+        client_user_id = st.session_state.get("user_id") or st.session_state.get("client_user_id")
         payload = {
-            "conversation_id": conversation_id,
+            "conversation_id": str(conversation_id) if conversation_id else None,
             "message": message
         }
         
         headers = {"Content-Type": "application/json"}
+        # Attach app JWT in X-User-Token so Authorization can carry Cloud Run ID token
         if token:
-            headers["Authorization"] = f"Bearer {token}"
+            headers["X-User-Token"] = f"Bearer {token}"
+        if st.session_state.get("api_key"):
+            headers["X-API-Key"] = st.session_state.api_key
+        # Always include Cloud Run ID token (service is private)
+        id_tok = await self._get_id_token()
+        headers["Authorization"] = f"Bearer {id_tok}"
         
         try:
             async with self.session.post(
-                f"{BASE_URL}/api/ai/chat",
+                f"{self.base_url}/api/ai/chat",
                 json=payload,
                 headers=headers
             ) as response:
@@ -81,71 +143,85 @@ class WebChatInterface:
                     error_text = await response.text()
                     return {"error": f"Error {response.status}: {error_text}"}
         except Exception as e:
-            return {"error": f"Connection error: {str(e)}. Make sure the backend is running on {BASE_URL}"}
+            return {"error": f"Connection error: {str(e)}. Make sure the backend is running on {self.base_url}"}
 
     async def start_conversation(self, token: str = None):
         """Start a new conversation and receive the assistant greeting."""
         headers = {"Content-Type": "application/json"}
+        # Attach app JWT separately and Cloud Run ID token in Authorization
         if token:
-            headers["Authorization"] = f"Bearer {token}"
+            headers["X-User-Token"] = f"Bearer {token}"
+        if st.session_state.get("api_key"):
+            headers["X-API-Key"] = st.session_state.api_key
+        client_user_id = st.session_state.get("user_id") or st.session_state.get("client_user_id")
+        id_tok = await self._get_id_token()
+        headers["Authorization"] = f"Bearer {id_tok}"
         try:
-            async with self.session.post(f"{BASE_URL}/api/ai/start-conversation", headers=headers) as response:
+            async with self.session.post(
+                f"{self.base_url}/api/ai/start-conversation",
+                json={"client_user_id": str(client_user_id)},
+                headers=headers
+            ) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     error_text = await response.text()
                     return {"error": f"Error {response.status}: {error_text}"}
         except Exception as e:
-            return {"error": f"Connection error: {str(e)}. Make sure the backend is running on {BASE_URL}"}
+            return {"error": f"Connection error: {str(e)}. Make sure the backend is running on {self.base_url}"}
 
     async def login_user(self, email: str, password: str):
         """Login user and return token payload or error."""
         try:
             async with aiohttp.ClientSession() as s:
+                # Cloud Run ID token required even for auth endpoints on private service
+                id_tok = await self._get_id_token()
                 async with s.post(
-                    f"{BASE_URL}/api/auth/login",
+                    f"{self.base_url}/api/auth/login",
                     json={"email": email, "password": password},
-                    headers={"Content-Type": "application/json"}
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {id_tok}"}
                 ) as response:
                     try:
                         data = await response.json()
                     except Exception:
                         data = {"detail": await response.text()}
                     if response.status == 200:
-                        return {"access_token": data.get("access_token")}
+                        return {"access_token": data.get("access_token"), "user_id": data.get("user_id")}
                     return {"error": data.get("detail", "Login failed")}
         except Exception as e:
-            return {"error": f"Connection error: {str(e)}. Make sure the backend is running on {BASE_URL}"}
+            return {"error": f"Connection error: {str(e)}. Make sure the backend is running on {self.base_url}"}
 
     async def register_user(self, email: str, password: str, first_name: str, last_name: str):
         """Register a new user."""
         try:
             async with aiohttp.ClientSession() as s:
+                id_tok = await self._get_id_token()
                 async with s.post(
-                    f"{BASE_URL}/api/auth/register",
+                    f"{self.base_url}/api/auth/register",
                     json={
                         "email": email,
                         "password": password,
                         "first_name": first_name,
                         "last_name": last_name
                     },
-                    headers={"Content-Type": "application/json"}
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {id_tok}"}
                 ) as response:
                     try:
                         data = await response.json()
                     except Exception:
                         data = {"detail": await response.text()}
                     if response.status == 200:
-                        return {"access_token": data.get("access_token")}
+                        return {"access_token": data.get("access_token"), "user_id": data.get("user_id")}
                     return {"error": data.get("detail", "Registration failed")}
         except Exception as e:
-            return {"error": f"Connection error: {str(e)}. Make sure the backend is running on {BASE_URL}"}
+            return {"error": f"Connection error: {str(e)}. Make sure the backend is running on {self.base_url}"}
 
     async def health_check(self):
         """Ping backend health endpoint."""
         try:
             async with aiohttp.ClientSession() as s:
-                async with s.get(f"{BASE_URL}/health") as response:
+                id_tok = await self._get_id_token()
+                async with s.get(f"{self.base_url}/health", headers={"Authorization": f"Bearer {id_tok}"}) as response:
                     text = await response.text()
                     return {"status": response.status, "body": text}
         except Exception as e:
@@ -167,6 +243,12 @@ def run_web_chat():
         st.session_state.user_info = None
     if "greeted" not in st.session_state:
         st.session_state.greeted = False
+    if "user_id" not in st.session_state:
+        st.session_state.user_id = None
+    if "client_user_id" not in st.session_state:
+        st.session_state.client_user_id = str(uuid.uuid4())
+    if "api_key" not in st.session_state:
+        st.session_state.api_key = ""
     
     # Authentication section
     if not st.session_state.token:
@@ -192,6 +274,7 @@ def run_web_chat():
                                 st.error(f"❌ {result['error']}")
                             else:
                                 st.session_state.token = result["access_token"]
+                                st.session_state.user_id = str(result.get("user_id")) if result.get("user_id") else st.session_state.user_id
                                 st.session_state.user_info = {"email": email}
                                 st.success("✅ Login successful!")
                                 st.rerun()
@@ -218,6 +301,7 @@ def run_web_chat():
                                 st.error(f"❌ {result['error']}")
                             else:
                                 st.session_state.token = result["access_token"]
+                                st.session_state.user_id = str(result.get("user_id")) if result.get("user_id") else st.session_state.user_id
                                 st.session_state.user_info = {"email": email, "first_name": first_name, "last_name": last_name}
                                 st.success("✅ Account created successfully!")
                                 st.rerun()
@@ -226,6 +310,15 @@ def run_web_chat():
     # Sidebar for controls
     with st.sidebar:
         st.header("🎛️ Controls")
+        # Backend URL control
+        _current_backend = st.text_input("Backend URL", value=get_backend_url())
+        if _current_backend and _current_backend != st.session_state.backend_url:
+            st.session_state.backend_url = _current_backend
+            st.rerun()
+        _api_key_val = st.text_input("X-API-Key (test only)", value=st.session_state.api_key, type="password")
+        if _api_key_val != st.session_state.api_key:
+            st.session_state.api_key = _api_key_val
+            st.rerun()
         
         if st.button("🆕 New Conversation"):
             st.session_state.conversation_id = None
@@ -244,7 +337,7 @@ def run_web_chat():
         st.header("ℹ️ Info")
         if st.session_state.user_info:
             st.write(f"**User:** {st.session_state.user_info.get('email', 'Unknown')}")
-        st.write(f"**Backend:** {BASE_URL}")
+        st.write(f"**Backend:** {get_backend_url()}")
         if st.button("🔌 Check backend connection"):
             result = asyncio.run(check_backend())
             if result.get("status") == 200:
@@ -263,7 +356,8 @@ def run_web_chat():
             result = asyncio.run(start_conversation())
             if result and "error" not in result:
                 st.session_state.conversation_id = result["conversation_id"]
-                st.session_state.messages.append({"role": "assistant", "content": result["response"]})
+                reply_text = result.get("ai_response") or result.get("response") or ""
+                st.session_state.messages.append({"role": "assistant", "content": reply_text})
                 st.session_state.greeted = True
                 st.rerun()
 
@@ -273,7 +367,8 @@ def run_web_chat():
             result = asyncio.run(start_conversation())
             if result and "error" not in result:
                 st.session_state.conversation_id = result["conversation_id"]
-                st.session_state.messages.append({"role": "assistant", "content": result["response"]})
+                reply_text = result.get("ai_response") or result.get("response") or ""
+                st.session_state.messages.append({"role": "assistant", "content": reply_text})
                 st.session_state.greeted = True
                 st.rerun()
     
@@ -293,7 +388,8 @@ def run_web_chat():
                 result = asyncio.run(start_conversation())
                 if result and "error" not in result:
                     st.session_state.conversation_id = result["conversation_id"]
-                    st.session_state.messages.append({"role": "assistant", "content": result["response"]})
+                    reply_text = result.get("ai_response") or result.get("response") or ""
+                    st.session_state.messages.append({"role": "assistant", "content": reply_text})
                 else:
                     st.error(result.get("error", "Failed to start conversation"))
                     st.stop()
@@ -312,7 +408,7 @@ def run_web_chat():
             if "error" in response:
                 st.error(response["error"])
             else:
-                full_text = response["response"] or ""
+                full_text = response.get("ai_response") or response.get("response") or ""
                 # Stream chunk-by-chunk to simulate typing using Streamlit's write_stream
                 st.write_stream(_simulate_streaming(full_text))
                 # Finalize message
@@ -324,27 +420,27 @@ def run_web_chat():
 
 async def get_ai_response(message: str):
     """Get AI response for a message."""
-    async with WebChatInterface() as chat:
+    async with WebChatInterface(base_url=get_backend_url()) as chat:
         return await chat.send_message(message, st.session_state.conversation_id, st.session_state.token)
 
 async def start_conversation():
     """Start a new conversation and get the greeting."""
-    async with WebChatInterface() as chat:
+    async with WebChatInterface(base_url=get_backend_url()) as chat:
         return await chat.start_conversation(st.session_state.token)
 
 async def login_user(email: str, password: str):
     """Perform login and return token payload or error."""
-    async with WebChatInterface() as chat:
+    async with WebChatInterface(base_url=get_backend_url()) as chat:
         return await chat.login_user(email, password)
 
 async def register_user(email: str, password: str, first_name: str, last_name: str):
     """Perform registration and return token payload or error."""
-    async with WebChatInterface() as chat:
+    async with WebChatInterface(base_url=get_backend_url()) as chat:
         return await chat.register_user(email, password, first_name, last_name)
 
 async def check_backend():
     """Check backend /health endpoint."""
-    async with WebChatInterface() as chat:
+    async with WebChatInterface(base_url=get_backend_url()) as chat:
         return await chat.health_check()
 
 if __name__ == "__main__":

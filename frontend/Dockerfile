@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     STREAMLIT_SERVER_HEADLESS=true \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
     # Default backend URL; override at runtime with -e BASE_URL=...
-    BASE_URL=http://backend:8000
+    BASE_URL=https://igethappy-chatbot-790537847272.us-central1.run.app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
